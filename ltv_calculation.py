@@ -117,11 +117,24 @@ def calculate_ltv(df):
     paid_revenue = paid_users['total_revenue'].sum()
     paid_avg_ltv = paid_revenue / paid_total if paid_total > 0 else 0
     
-    # ARPU
-    arpu = total_revenue / total_users
+    # 免费用户 LTV
+    free_users = df[df['is_paid'] == False]
+    free_total = len(free_users)
+    free_revenue = free_users['total_revenue'].sum()
+    free_avg_ltv = free_revenue / free_total if free_total > 0 else 0
     
-    # 平均生命周期
+    # 月均 ARPU = 平均 LTV / 平均生命周期
     avg_lifetime = df['lifetime_months'].mean()
+    monthly_arpu = avg_ltv / avg_lifetime if avg_lifetime > 0 else 0
+    
+    # 付费率
+    paid_rate = paid_total / total_users
+    
+    # ===== LTV 分段（修正：包含 $0） =====
+    ltv_bins = [-0.1, 0, 10, 50, 100, 200, 500, float('inf')]
+    ltv_labels = ['$0', '$1-10', '$10-50', '$50-100', '$100-200', '$200-500', '$500+']
+    df['ltv_segment'] = pd.cut(df['total_revenue'], bins=ltv_bins, labels=ltv_labels)
+    ltv_distribution = df['ltv_segment'].value_counts().sort_index().to_dict()
     
     # 按计划类型分组
     plan_ltv = df.groupby('plan_type').agg({
@@ -141,12 +154,6 @@ def calculate_ltv(df):
     scenario_ltv.columns = ['总营收', '平均LTV', '用户数', '平均生命周期(月)']
     scenario_ltv = scenario_ltv.reset_index()
     
-    # LTV 分段
-    ltv_bins = [0, 10, 50, 100, 200, 500, float('inf')]
-    ltv_labels = ['$0-10', '$10-50', '$50-100', '$100-200', '$200-500', '$500+']
-    df['ltv_segment'] = pd.cut(df['total_revenue'], bins=ltv_bins, labels=ltv_labels)
-    ltv_distribution = df['ltv_segment'].value_counts().sort_index().to_dict()
-    
     return {
         'total_users': total_users,
         'total_revenue': total_revenue,
@@ -154,7 +161,10 @@ def calculate_ltv(df):
         'paid_users': paid_total,
         'paid_revenue': paid_revenue,
         'paid_avg_ltv': paid_avg_ltv,
-        'arpu': arpu,
+        'free_users': free_total,
+        'free_avg_ltv': free_avg_ltv,
+        'monthly_arpu': monthly_arpu,
+        'paid_rate': paid_rate,
         'avg_lifetime': avg_lifetime,
         'plan_ltv': plan_ltv,
         'scenario_ltv': scenario_ltv,
@@ -176,8 +186,20 @@ def generate_html_report(results, output_path="output/ltv_report.html"):
         <div class="stat-card"><div class="label">总营收</div><div class="value">${results['total_revenue']:,.0f}</div></div>
         <div class="stat-card"><div class="label">平均 LTV</div><div class="value">${results['avg_ltv']:.2f}</div></div>
         <div class="stat-card"><div class="label">付费用户 LTV</div><div class="value">${results['paid_avg_ltv']:.2f}</div></div>
+        <div class="stat-card"><div class="label">免费用户 LTV</div><div class="value">${results['free_avg_ltv']:.2f}</div></div>
+        <div class="stat-card"><div class="label">月均 ARPU</div><div class="value">${results['monthly_arpu']:.2f}</div></div>
         <div class="stat-card"><div class="label">平均生命周期</div><div class="value">{results['avg_lifetime']:.1f} 月</div></div>
-        <div class="stat-card"><div class="label">ARPU</div><div class="value">${results['arpu']:.2f}</div></div>
+        <div class="stat-card"><div class="label">付费率</div><div class="value">{results['paid_rate']*100:.1f}%</div></div>
+    </div>
+    """
+    
+    # ===== 指标关系说明 =====
+    relationship_box = f"""
+    <div class="relationship-box">
+        <strong>📐 指标关系</strong><br>
+        平均 LTV × 总用户 = 总营收 &nbsp;→&nbsp; ${results['avg_ltv']:.2f} × {results['total_users']:,} = ${results['total_revenue']:,.0f}<br>
+        月均 ARPU = 平均 LTV / 平均生命周期 &nbsp;→&nbsp; ${results['avg_ltv']:.2f} / {results['avg_lifetime']:.1f}月 = ${results['monthly_arpu']:.2f}/月<br>
+        付费率 = 付费用户 / 总用户 &nbsp;→&nbsp; {results['paid_users']:,} / {results['total_users']:,} = {results['paid_rate']*100:.1f}%
     </div>
     """
     
@@ -238,14 +260,13 @@ def generate_html_report(results, output_path="output/ltv_report.html"):
         .stat-card .label{{font-size:0.8rem;color:#888}}
         .stat-card .value{{font-size:1.8rem;font-weight:bold;color:#1a1a2e}}
         
+        .relationship-box{{background:#f0f4ff;padding:16px 20px;border-radius:12px;border-left:4px solid #667eea;margin-bottom:16px;line-height:1.8;font-size:0.95rem}}
+        
         .table-wrapper{{overflow-x:auto}}
         table{{width:100%;border-collapse:collapse;font-size:0.9rem}}
         th,td{{padding:10px 14px;text-align:left;border-bottom:1px solid #eee}}
         th{{background:#f8f9fa;font-weight:600;color:#667eea}}
         tr:hover td{{background:#fafafa}}
-        
-        .definition-box{{background:#f0f4ff;padding:16px 20px;border-radius:12px;border-left:4px solid #667eea;margin-bottom:16px}}
-        .definition-box code{{background:#e8eaed;padding:2px 8px;border-radius:4px}}
         
         .footer{{text-align:center;padding:20px;color:#aaa;font-size:0.8rem}}
         
@@ -262,12 +283,17 @@ def generate_html_report(results, output_path="output/ltv_report.html"):
     
     <!-- ====== 定义说明 ====== -->
     <div class="section">
-        <h2>📐 LTV 定义与计算</h2>
-        <div class="definition-box">
+        <h2>📐 LTV 定义与指标说明</h2>
+        <div style="background:#f8f9fa;padding:16px 20px;border-radius:12px;margin-bottom:12px;line-height:1.8;">
             <strong>LTV (LifeTime Value)</strong> = 用户从开始使用到流失/观察期结束，为产品贡献的总价值<br><br>
-            <strong>计算公式</strong>：LTV = 平均每用户收入 (ARPU) × 用户平均生命周期 (Lifetime)<br><br>
-            <strong>本报告计算方式</strong>：<code>LTV = Σ 用户每月付费 × 生命周期月数</code>
+            <strong>计算公式</strong>：LTV = Σ 用户每月付费 × 生命周期月数<br><br>
+            <strong>关键指标</strong>：<br>
+            • <strong>平均 LTV</strong> = 总营收 / 总用户数（所有用户的平均贡献）<br>
+            • <strong>付费用户 LTV</strong> = 付费用户总营收 / 付费用户数<br>
+            • <strong>月均 ARPU</strong> = 平均 LTV / 平均生命周期（每月每用户平均收入）<br>
+            • <strong>付费率</strong> = 付费用户数 / 总用户数
         </div>
+        {relationship_box}
     </div>
     
     <!-- ====== 概览 ====== -->
@@ -347,7 +373,10 @@ def main():
     print(f"  Total revenue: ${results['total_revenue']:,.2f}")
     print(f"  Average LTV: ${results['avg_ltv']:.2f}")
     print(f"  Paid users LTV: ${results['paid_avg_ltv']:.2f}")
+    print(f"  Free users LTV: ${results['free_avg_ltv']:.2f}")
+    print(f"  Monthly ARPU: ${results['monthly_arpu']:.2f}")
     print(f"  Average lifetime: {results['avg_lifetime']:.1f} months")
+    print(f"  Paid rate: {results['paid_rate']*100:.1f}%")
     
     print("\n📄 Generating HTML report...")
     report_path = generate_html_report(results)
